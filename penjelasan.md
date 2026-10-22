@@ -21,6 +21,7 @@ Dokumen ini dibuat khusus untuk membedah **setiap baris kode** yang ada di dalam
 14. [`src/components/pages/Cart/`](#14-srccomponentspagescart) — Halaman Keranjang Belanja
 15. [`src/routes/Route.tsx`](#15-srcroutesroutettsx) — Definisi Daftar Rute
 16. [`src/routes/index.tsx`](#16-srcroutesindextsx) — Inisialisasi Router
+17. [`src/store/useCartStore.ts`](#17-srcstoreusecartstorets) — Global State Management Keranjang Belanja (Zustand)
 
 ---
 
@@ -473,4 +474,156 @@ export const router = createBrowserRouter(routes);
 
 ---
 
-🎯 **Ringkasan Progres:** Seluruh arsitektur dasar, styling modern Tailwind v4 (`@theme`), Hero Section interaktif, dan Navbar pintar dengan scroll-detection sudah selesai, rapi, dan terdokumentasi lengkap!
+## 17. `src/store/useCartStore.ts`
+Pusat manajemen state global aplikasi untuk keranjang belanja menggunakan **Zustand** dan middleware **Persist (LocalStorage)**.
+
+```typescript
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import type { CartItem, Product } from "../types";
+
+interface CartState {
+  items: CartItem[];
+  addToCart: (product: Product) => void;
+  removeFromCart: (productId: number) => void;
+  increaseQty: (productId: number) => void;
+  decreaseQty: (productId: number) => void;
+  clearCart: () => void;
+  getTotalItem: () => number;
+  getTotalPrice: () => number;
+}
+```
+
+### 🔍 Penjelasan Baris per Baris & Konsep:
+
+#### 1. Mengapa Kita Menggunakan Zustand (Bukan `useState` Biasa)?
+- Jika memakai `useState`, state keranjang hanya hidup di dalam 1 komponen.
+- Masalahnya: **Navbar** butuh tahu total barang untuk badge merah, **Kartu Produk** butuh tombol "Tambah ke Keranjang", dan **Halaman Cart** butuh daftar barang untuk checkout.
+- Jika memakai `useState`, kita harus melakukan *Prop Drilling* (mengoper data naik-turun melewati banyak komponen perantara) yang sangat melelahkan dan rentan bug.
+- Dengan **Zustand**, data keranjang disimpan di **Global Store**. Komponen apa pun bisa membaca data atau memanggil fungsi belanja secara langsung dari mana saja!
+
+---
+
+#### 2. Bedah Logika Setiap Action di Store:
+
+```typescript
+addToCart: (product: Product) => {
+  const { items } = get();
+  const existingItem = items.find((item) => item.product.id === product.id);
+  if (existingItem) {
+    set({
+      items: items.map((item) =>
+        item.product.id === product.id
+          ? { ...item, quantity: item.quantity + 1 }
+          : item,
+      ),
+    });
+  } else {
+    set({ items: [...items, { product, quantity: 1 }] });
+  }
+},
+```
+- **`get()`**: Fungsi bawaan Zustand untuk membaca state saat ini secara langsung.
+- **`items.find(...)`**: Mencari apakah produk yang diklik sudah pernah dimasukkan ke dalam keranjang sebelumnya.
+- **Immutability dengan `.map()`**:
+  - Di React, kita **tidak boleh mengubah array secara langsung** (seperti `item.quantity++`).
+  - Menggunakan `.map()` menghasilkan array baru, di mana barang yang cocok diperbarui kuantitasnya `{ ...item, quantity: item.quantity + 1 }`, sedangkan barang lainnya dibiarkan utuh.
+- **Spread Operator `[...items, { product, quantity: 1 }]`**:
+  - Jika barang baru pertama kali dibeli, kita gabungkan array lama dengan objek barang baru berkuantitas `1`.
+
+---
+
+```typescript
+removeFromCart: (productId: number) => {
+  set({
+    items: get().items.filter((item) => item.product.id !== productId),
+  });
+},
+```
+- **`.filter(item => item.product.id !== productId)`**:
+  - Menghapus item dari array dengan cara menyaring dan hanya menyisakan barang-barang yang ID-nya **tidak sama** dengan ID barang yang ingin dihapus.
+
+---
+
+```typescript
+increaseQty: (productId: number) => {
+  set({
+    items: get().items.map((item) =>
+      item.product.id === productId
+        ? { ...item, quantity: item.quantity + 1 }
+        : item,
+    ),
+  });
+},
+```
+- Menambahkan 1 kuantitas secara spesifik pada barang yang memiliki ID tersebut.
+
+---
+
+```typescript
+decreaseQty: (productId: number) => {
+  const { items } = get();
+  const targetItem = items.find((item) => item.product.id === productId);
+  if (targetItem && targetItem.quantity > 1) {
+    set({
+      items: items.map((item) =>
+        item.product.id === productId
+          ? { ...item, quantity: item.quantity - 1 }
+          : item,
+      ),
+    });
+  } else {
+    set({
+      items: items.filter((item) => item.product.id !== productId),
+    });
+  }
+},
+```
+- **Logika Cerdas E-Commerce**:
+  - Jika kuantitas barang masih lebih dari 1 (misal 3), saat dipencet tombol minus `-` maka kuantitas berkurang jadi 2.
+  - Namun jika kuantitas barang tinggal 1 lalu dipencet minus `-`, sistem menganggap user membatalkan pesanan tersebut sehingga barang otomatis dihapus dari keranjang (`.filter`).
+
+---
+
+```typescript
+getTotalItem: () => {
+  return get().items.reduce((total, item) => total + item.quantity, 0);
+},
+```
+- **`.reduce(...)` untuk Total Item**:
+  - Menjumlahkan seluruh `quantity` dari setiap barang di keranjang.
+  - Contoh: Jika ada 2 Baju dan 3 Sepatu, fungsi ini menghasilkan angka `5`. Angka inilah yang akan kita pasang pada badge merah Navbar!
+
+---
+
+```typescript
+getTotalPrice: () => {
+  return get().items.reduce(
+    (total, item) => total + item.product.price * item.quantity,
+    0,
+  );
+},
+```
+- **`.reduce(...)` untuk Total Harga**:
+  - Menghitung akumulasi `harga barang × kuantitas barang` untuk seluruh item keranjang belanja. Nilai ini dipakai di halaman Checkout/Cart.
+
+---
+
+```typescript
+    {
+      name: "cart",
+    },
+```
+- **Middleware `persist`**:
+  - Fitur sakti bawaan Zustand.
+  - **Alasan & Manfaat**: Secara otomatis menyimpan array `items` ke `localStorage` browser dengan key `"cart"`.
+  - Jika user me-refresh halaman atau menutup tab browser lalu membukanya lagi esok hari, daftar belanjaan di keranjang **tidak akan hilang!**
+
+---
+
+🎯 **Ringkasan Progres Hari Ini:**
+1. Setup arsitektur dasar, routing, layout semantik, dan styling modern `@theme` Tailwind CSS v4.
+2. Full-bleed Hero Section dan Navbar responsif yang otomatis berubah warna saat di-scroll.
+3. Otak keranjang belanja global (`useCartStore`) lengkap dengan persistensi LocalStorage telah selesai 100%!
+
+Di sesi berikutnya, kita tinggal menghubungkan badge di Navbar dengan store ini, lalu masuk ke **Step 5: Fetching Data Produk Real dari DummyJSON menggunakan TanStack React Query**! 🚀
